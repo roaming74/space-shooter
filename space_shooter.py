@@ -21,6 +21,16 @@ LIGHT_GRAY = (140, 140, 150)
 
 SAVE_PATH = os.path.join(os.path.expanduser("~"), ".space_shooter_save.json")
 
+
+def get_base_dir():
+    """Папка, где лежит сама игра (.exe или .py) - туда же кладём папку mods."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+MODS_DIR = os.path.join(get_base_dir(), "mods")
+
 pygame.mixer.pre_init(SAMPLE_RATE, -16, 2, 512)
 pygame.init()
 
@@ -41,6 +51,14 @@ clock = pygame.time.Clock()
 font = pygame.font.SysFont("Arial", 26)
 big_font = pygame.font.SysFont("Arial", 46)
 menu_font = pygame.font.SysFont("Arial", 34)
+
+_FONT_CACHE = {}
+
+
+def get_font_cached(size):
+    if size not in _FONT_CACHE:
+        _FONT_CACHE[size] = pygame.font.SysFont("Arial", size)
+    return _FONT_CACHE[size]
 
 
 def draw_text(text, font_obj, color, x, y, center=True):
@@ -300,6 +318,7 @@ class Enemy:
         self.speed = random.uniform(2, 3 + level * 0.3)
         self.hp = 1
         self.max_hp = 1
+        self.score_value = 10
 
     def update(self):
         self.y += self.speed
@@ -337,6 +356,89 @@ class Enemy2(Enemy):
         hp_ratio = self.hp / self.max_hp
         pygame.draw.rect(screen, GRAY, (self.x, self.y - 8, bar_w, 5))
         pygame.draw.rect(screen, GREEN, (self.x, self.y - 8, int(bar_w * hp_ratio), 5))
+
+
+# ---------- Система модов ----------
+# Моды - это .py файлы в папке "mods" рядом с игрой.
+# Каждый мод может добавлять новые типы врагов через register_enemy(...).
+
+ENEMY_REGISTRY = []  # список словарей: {"cls", "weight", "min_level", "score"}
+LOADED_MODS = []
+MOD_ERRORS = []
+
+
+def register_enemy(cls, weight=3, min_level=1, score=10):
+    """Добавляет новый тип врага в игру. Вызывается модами.
+
+    cls        - класс врага (должен наследоваться от Enemy)
+    weight     - насколько часто он появляется относительно других (больше = чаще)
+    min_level  - с какого уровня игры начинает появляться
+    score      - сколько очков даёт за уничтожение
+    """
+    ENEMY_REGISTRY.append({"cls": cls, "weight": weight, "min_level": min_level, "score": score})
+
+
+def register_default_enemies():
+    ENEMY_REGISTRY.clear()
+    register_enemy(Enemy, weight=5, min_level=1, score=10)
+    register_enemy(Enemy2, weight=3, min_level=2, score=25)
+
+
+def load_mods():
+    """Ищет .py файлы в папке mods и подгружает их в игру."""
+    LOADED_MODS.clear()
+    MOD_ERRORS.clear()
+
+    if not os.path.isdir(MODS_DIR):
+        os.makedirs(MODS_DIR, exist_ok=True)
+        return
+
+    mod_api = {
+        "pygame": pygame,
+        "random": random,
+        "screen": screen,
+        "WIDTH": WIDTH,
+        "HEIGHT": HEIGHT,
+        "FPS": FPS,
+        "WHITE": WHITE,
+        "BLACK": BLACK,
+        "RED": RED,
+        "GREEN": GREEN,
+        "YELLOW": YELLOW,
+        "BLUE": BLUE,
+        "GRAY": GRAY,
+        "Enemy": Enemy,
+        "Enemy2": Enemy2,
+        "register_enemy": register_enemy,
+    }
+
+    for fname in sorted(os.listdir(MODS_DIR)):
+        if not fname.endswith(".py"):
+            continue
+        path = os.path.join(MODS_DIR, fname)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                code = f.read()
+            mod_globals = dict(mod_api)
+            exec(compile(code, path, "exec"), mod_globals)
+            LOADED_MODS.append(fname)
+        except Exception as e:
+            MOD_ERRORS.append(f"{fname}: {e}")
+
+
+def pick_enemy_class(level):
+    """Выбирает случайный тип врага среди доступных на этом уровне, с учётом веса."""
+    available = [e for e in ENEMY_REGISTRY if e["min_level"] <= level]
+    if not available:
+        available = [e for e in ENEMY_REGISTRY if e["cls"] is Enemy]
+    total = sum(e["weight"] for e in available)
+    r = random.uniform(0, total)
+    upto = 0
+    for entry in available:
+        upto += entry["weight"]
+        if r <= upto:
+            return entry
+    return available[-1]
 
 
 class PowerUp:
@@ -402,6 +504,9 @@ TRIPLE_DURATION = FPS * 8
 
 def main():
     global player_nickname, music_volume, sound_volume
+
+    register_default_enemies()
+    load_mods()
 
     stars = [Star() for _ in range(60)]
     state = STATE_NICKNAME if not player_nickname else STATE_MENU
@@ -497,8 +602,14 @@ def main():
             music_slider.draw()
             sound_slider.draw()
 
+            if LOADED_MODS:
+                mods_text = f"Моды: {', '.join(m[:-3] for m in LOADED_MODS)}"
+                draw_text(mods_text, font, (150, 220, 255), WIDTH // 2, 305)
+            if MOD_ERRORS:
+                draw_text(f"Ошибка модов: {len(MOD_ERRORS)}", font, RED, WIDTH // 2, 330)
+
         elif state == STATE_GUIDE:
-            draw_text("КАК ИГРАТЬ", big_font, YELLOW, WIDTH // 2, 150)
+            draw_text("КАК ИГРАТЬ", get_font_cached(34), YELLOW, WIDTH // 2, 40)
             lines = [
                 "← → или A / D — двигать корабль",
                 "ПРОБЕЛ — стрелять",
@@ -511,11 +622,19 @@ def main():
                 "оранжевый ромб — тройной выстрел",
                 "Чем больше очков — тем выше уровень",
                 "и тем быстрее враги!",
+                "",
+                "В игре есть моды! Официальный мод уже",
+                "есть, скачать можно тут:",
+                "https://github.com/roaming74/space-shooter-mods",
+                "Клади .py файлы модов в папку mods -",
+                "все они подгрузятся автоматически.",
+                "Сделай свой мод или найди чужой. Удачи!",
             ]
-            y = 230
+            y = 85
+            small_guide_font = get_font_cached(21)
             for line in lines:
-                draw_text(line, font, WHITE, WIDTH // 2, y)
-                y += 45
+                draw_text(line, small_guide_font, WHITE, WIDTH // 2, y)
+                y += 27
             back_button.draw()
 
         elif state == STATE_PLAYING:
@@ -539,10 +658,10 @@ def main():
             game["spawn_timer"] += 1
             spawn_rate = max(20, 60 - game["level"] * 8)
             if game["spawn_timer"] >= spawn_rate:
-                if game["level"] >= 2:
-                    enemies.append(Enemy2(game["level"]))
-                else:
-                    enemies.append(Enemy(game["level"]))
+                entry = pick_enemy_class(game["level"])
+                new_enemy = entry["cls"](game["level"])
+                new_enemy.score_value = entry["score"]
+                enemies.append(new_enemy)
                 game["spawn_timer"] = 0
 
             for bullet in bullets[:]:
@@ -568,7 +687,7 @@ def main():
                             if enemy in enemies:
                                 enemies.remove(enemy)
                             explosion_sound.play()
-                            game["score"] += 10 if enemy.max_hp == 1 else 25
+                            game["score"] += getattr(enemy, "score_value", 10)
                             if random.random() < POWERUP_DROP_CHANCE:
                                 kind = random.choice(["shield", "triple"])
                                 powerups.append(PowerUp(enemy.x + enemy.width // 2, enemy.y, kind))
