@@ -26,7 +26,7 @@
 - Ник игрока запоминается между запусками
 - Музыка и звуковые эффекты сгенерированы прямо в коде, без внешних аудиофайлов
 - Своя иконка
-
+- В версии 2.0.0 добавлена система модов! 
 ## 🛠️ Как запустить
 
 Нужен Python 3.10+ и pygame:
@@ -54,6 +54,11 @@ pyinstaller --onefile --windowed --icon="game_icon.ico" --version-file="version_
 - `space_shooter.py` — исходный код игры
 - `game_icon.ico` — иконка для сборки
 - `version_info.txt` — информация об издателе для PyInstaller
+
+## ✨ Ссылки игры
+
+- Мод для игры - Https://github.com/roaming74/space-shooter-mods/
+- Готовая игра на itch.io - https://vladickusiks.itch.io/space-shooter
 
 ---
 
